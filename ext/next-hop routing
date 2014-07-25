@@ -1,0 +1,677 @@
+<tenants>
+  <tenant name='t1'>
+    <tvlan tid='100'>
+      <svlan sid='10' IP='1.1.1.1' MASK='24' MAC='00:00:00:00:11:11'/>
+      <svlan sid='20' IP='1.1.2.1' MASK='24' MAC='00:00:00:00:12:11'/>
+      <svlan sid='30' IP='1.1.3.1' MASK='24' MAC='00:00:00:00:13:11'/>
+      <ports id='1'>
+          <svlan sid='10'/>
+          <svlan sid='20'/>
+      </ports>
+      <ports id='2'>
+          <svlan sid='10'/>
+          <svlan sid='20'/>
+      </ports>
+      <ports id='3'>
+          <svlan sid='30'/>
+      </ports>
+      <rt_table dst='10.0.0.0/24' via='30'/>
+    </tvlan>
+  </tenant>
+  <tenant name='t2'>
+    <tvlan tid='200'>
+      <svlan sid='10' IP='1.1.1.1' MASK='24' MAC='00:00:00:00:21:11'/>
+      <svlan sid='20' IP='1.1.2.1' MASK='24' MAC='00:00:00:00:22:11'/>
+      <svlan sid='30' IP='1.1.3.1' MASK='24' MAC='00:00:00:00:23:11'/>
+      <ports id='4'>
+          <svlan sid='10'/>
+          <svlan sid='20'/>
+      </ports>
+      <ports id='5'>
+          <svlan sid='10'/>
+          <svlan sid='20'/>
+      </ports>
+      <ports id='6'>
+          <svlan sid='30'/>
+      </ports>
+      <rt_table dst='0.0.0.0/0' via='30'/>
+    </tvlan>
+  </tenant>
+</tenants>
+
+Basically it supports overlapping IP address ranges between different tenants.
+
+Code:
+
+import struct
+import socket
+import sys
+import binascii
+import array
+import ipaddr
+import logging
+from netaddr import IPNetwork, IPAddress
+from dumbnet import addr
+from dumbnet import intf
+from dumbnet import route
+from dumbnet import IP_PROTO_IP
+from ryu.ofproto.ofproto_parser import MsgBase, msg_pack_into, msg_str_attr
+from ryu.base import app_manager
+from ryu.controller import ofp_event
+from ryu.controller.ofp_event import EventOFPSwitchFeatures
+from ryu.controller.ofp_event import EventOFPPacketIn
+from ryu.ofproto import inet
+from ryu.ofproto import ether
+from ryu.lib.mac import haddr_to_bin, haddr_to_str
+from ryu.lib.packet import packet
+from ryu.lib.packet import ethernet
+from ryu.lib.packet import arp
+from ryu.lib.packet import vlan
+from ryu.lib.packet import ipv4
+from ryu.lib.packet import icmp
+from ryu.lib.packet import udp
+from ryu.lib.packet import tcp
+from ryu.ofproto import ofproto_v1_2
+from ryu.controller.handler import MAIN_DISPATCHER, HANDSHAKE_DISPATCHER
+from ryu.controller.handler import set_ev_cls, set_ev_handler
+from ryu.controller import (conf_switch,
+                            dpset,
+                            handler,
+                            network,
+                            tunnels)
+
+import time
+import xml.etree.ElementTree as ET
+
+# Timeout for flows
+FLOW_IDLE_TIMEOUT = 10
+DEBUG = 1
+# Timeout for ARP entries
+ARP_TIMEOUT = 60 * 2
+LOG = logging.getLogger('ryu.app.novlan')
+LOG.setLevel(5)
+
+
+class ReadConf:
+    def __init__(self, conffile):
+      """
+      self.conffile = conffile
+      self.doc = ET.parse(self.conffile)
+      self.config = doc.getroot()
+      """
+      self.config = ET.parse(conffile).getroot()
+
+    def readTenantConf(self):
+        tenant_conf = []
+        for tenant in self.config.iter('tenant'):
+            tvlan_dic = {}
+            for tvlan in tenant.iter('tvlan'):
+                svlan_list = []
+                ports_list = []
+                rt_table_list = []
+                for svlan in tvlan.findall('svlan'):
+                    svlan_list.append(svlan.attrib)
+                for port in tvlan.findall('ports'):
+                    sid_list = []
+                    for svlan in port.findall('svlan'):
+                        sid_list.append(svlan.attrib)
+                    ports_list.append({ 'id':port.get('id'), 'dpid':port.get('dpid'), 'svlan':sid_list})
+                for rt_table in tvlan.findall('rt_table'):
+                    rt_table_list.append(rt_table.attrib)
+            tvlan_dic = {'tid':tvlan.get('tid'), 'svlan':svlan_list, 'ports':ports_list, 'rt_table':rt_table_list}
+            tenant_conf.append({ 'name':tenant.get('name'), 'tvlan':tvlan_dic })
+        return tenant_conf
+
+    def readSwitchConf(self):
+        switch_conf = []
+        for switch in self.config.iter('switch'):
+            port_list = []
+            for port in switch.iter('port'):
+                port_list.append(port.attrib)
+            switch_conf.append({'dpid': switch.get('dpid'), 'ports':port_list })
+        return switch_conf
+
+class getSwitchPath():
+    def __init__(self, src_switch, dst_switch, conf):
+        self.src_switch = src_switch
+        self.dst_switch = dst_switch
+        self.conf = conf
+
+    def getSwitches(self, conf):
+        point=[]
+        edge=[]
+        for switch in conf:
+            point.append(switch['dpid'])
+            for port in switch['ports']:
+                edge_tupel = (switch['dpid'], port['pdpid'], int(port['cost']),  port['id'],  port['pid'])
+                edge.append(edge_tupel)
+        return edge, point
+
+    def dijkstra(self, point, edge, start, destination):
+        pointProperties = [ [i, "inf", None, False] for i in point if i != start ]
+        pointProperties += [ [start, 0, None, False] ]
+        for i in range(len(pointProperties)):
+            pointProperties[i] += [ i ]
+        while True:
+            notvisitedpoint = filter(lambda x: not x[3], pointProperties)
+            if not notvisitedpoint: break
+            sortedList = sorted(notvisitedpoint, key=lambda i: i[1])
+            activepoint = sortedList[0]
+            pointProperties[activepoint[4]][3] = True
+            if activepoint[0] == destination:
+                break
+            activeedge = filter(lambda x: x[0] == activepoint[0], edge)
+            for edge in activeedge:
+                otherpointId = filter(lambda x: x[0] == edge[1], pointProperties)[0][4]
+                weightSum = activepoint[1] + edge[2]
+                if weightSum < pointProperties[otherpointId][1]:
+                    pointProperties[otherpointId][1] = weightSum
+                    pointProperties[otherpointId][2] = activepoint[4]
+        if activepoint[0] == destination:
+            way = []
+            way += [ activepoint[0] ]
+            cost = 0
+            while activepoint[0] != start:
+                activepoint = pointProperties[activepoint[2]]
+                way += [ activepoint[0] ]
+                cost += activepoint[1]
+            way.reverse()
+            return way
+        else:
+            raise "no path found"
+
+    def switchPath(self):
+        edge_point = self.getSwitches(self.conf)
+        edge = edge_point[1]
+        point = edge_point[0]
+        way = self.dijkstra(edge, point, self.src_switch, self.dst_switch)
+        switch_prev = ''
+        path = []
+        switchCounter = 0
+        switchMax = len(way)-1
+        for switch in way:
+            # first switch
+            if switchCounter == 0:
+                ingressInt = 'Src'
+                for switch2 in self.conf:
+                    if switch2['dpid'] == switch:
+                        for port in switch2['ports']:
+                            if port['pdpid'] == way[switchCounter+1]:
+                               path.append({'ingressInt':ingressInt, 'switch':switch2['dpid'], 'egressInt':port['id']})
+
+                switchCounter = switchCounter+1
+                switch_prev = switch
+            # switches in between
+            elif switchCounter < switchMax:
+                ingressInt = None
+                egressInt = None
+                for switch2 in self.conf:
+                    if switch2['dpid'] == switch:
+                        for port in switch2['ports']:
+                            # find port to previous switch
+                            if port['pdpid'] == switch_prev:
+                                ingressInt = port['id']
+                            # find port to next switch
+                            elif port['pdpid'] == way[switchCounter+1]:
+                                egressInt = port['id']
+                            if ingressInt != None and egressInt != None:
+                                path.append({'ingressInt':ingressInt, 'switch':switch2['dpid'], 'egressInt':egressInt})
+                switchCounter = switchCounter+1
+                switch_prev = switch
+            elif switchCounter == switchMax:
+                egressInt = 'Dst'
+                for switch2 in self.conf:
+                    if switch2['dpid'] == switch:
+                        for port in switch2['ports']:
+                            # find port to previous switch
+                            if port['pdpid'] == switch_prev:
+                                ingressInt = port['id']
+                            if ingressInt != None :
+                                path.append({'ingressInt':ingressInt, 'switch':switch2['dpid'], 'egressInt':egressInt})
+
+        return path
+
+
+
+
+class Tenant():
+    def __init__(self, tenants, in_port):
+
+        self.in_port = str(in_port)
+        self.tenants = tenants
+
+    def getInterfaceByIP(self, dst_ip):
+        for tenant in self.tenants:
+            for port in tenant['tvlan']['ports']:
+                if port['id'] == self.in_port:
+                    for svlan in tenant["tvlan"]["svlan"]:
+                        if svlan['IP'] == dst_ip:
+                            return svlan
+
+    def gettVID(self):
+        for tenant in self.tenants:
+            for port in tenant['tvlan']['ports']:
+                if port['id'] == self.in_port:
+                    tVID = tenant['tvlan']['tid']
+                    return tVID
+
+    def getInterfaceByMAC(self, mac):
+        for tenant in self.tenants:
+            for port in tenant['tvlan']['ports']:
+                if port['id'] == self.in_port:
+                    for svlan in tenant["tvlan"]["svlan"]:
+                        if svlan['MAC'] == mac:
+                            return svlan
+
+    def getPorts(self, tVID, switch = None):
+        portlist = []
+        for tenant in self.tenants:
+            if tenant['tvlan']['tid'] == str(tVID):
+                for port in tenant['tvlan']['ports']:
+                    portlist.append({'port':port['id'],'dpid':port['dpid']})
+                return portlist
+
+    def getIPs(self, tVID):
+        iplist = []
+        for tenant in self.tenants:
+            if tenant['tvlan']['tid'] == str(tVID):
+                for svlan in tenant["tvlan"]["svlan"]:
+                    iplist.append(svlan['IP'])
+                return iplist
+
+    def getRoutingTable(self, tVID, dst_ip, src_ip=None):
+        rt_table = []
+        for tenant in self.tenants:
+            if tenant['tvlan']['tid'] == str(tVID):
+                for svlan in tenant["tvlan"]["svlan"]:
+                    direct_nw = svlan['IP'] + '/' + str(svlan['MASK'])
+                    if IPAddress(dst_ip) in IPNetwork(direct_nw) and IPAddress(src_ip) in IPNetwork(direct_nw):
+                        LOG.log(2,"destination is on same subnet")
+                        return "l2"
+                    elif IPAddress(dst_ip) in IPNetwork(direct_nw):
+                        rt_table.append(svlan)
+                        #return self.rt_table
+                        return svlan
+                for routing_entry in tenant['tvlan']['rt_table']:
+                    if IPAddress(dst_ip) in IPNetwork(routing_entry['dst']):
+                        rt_table.append(routing_entry)
+                mostSpecificInterface=self.findMostSpecificInterface(rt_table)
+                for Interface in tenant["tvlan"]["svlan"]:
+                    if str(Interface['sid']) == mostSpecificInterface:
+                        return Interface
+                #return mostSpecificInterface
+
+    def findMostSpecificInterface(self, rt_table):
+        mask_list = []
+        for entry in rt_table:
+            mask_list.append(entry['dst'].partition('/')+str(entry['via']).partition(' '))
+        if mask_list != None:
+            return sorted(mask_list, key=lambda mask: mask[2])[-1][3]
+        return
+
+class Entry (object):
+  """
+  Not strictly an ARP entry.
+  We use the port to determine which port to forward traffic out of.
+  We use the MAC to answer ARP replies.
+  We use the timeout so that if an entry is older than ARP_TIMEOUT, we
+   flood the ARP request rather than try to answer it ourselves.
+  """
+  def __init__ (self, port, mac):
+    self.timeout = time.time() + ARP_TIMEOUT
+    self.port = port
+    self.mac = mac
+
+  def __eq__ (self, other):
+    if type(other) == tuple:
+      return (self.port,self.mac)==other
+    else:
+      return (self.port,self.mac)==(other.port,other.mac)
+  def __ne__ (self, other):
+    return not self.__eq__(other)
+
+  def isExpired (self):
+    return time.time() > self.timeout
+
+class NoVLAN(app_manager.RyuApp):
+    OFP_VERSIONS = [ofproto_v1_2.OFP_VERSION]
+
+    _CONTEXTS = {
+        'dpset': dpset.DPSet,
+    }
+
+
+    def __init__(self, *args, **kwargs):
+        super(NoVLAN, self).__init__(*args, **kwargs)
+        self.dpset = kwargs['dpset']
+        self.arpTable = {}
+        self.switchportTable = []
+
+    @set_ev_cls(dpset.EventDP, dpset.DPSET_EV_DISPATCHER)
+    def handler_datapath(self, ev):
+        if ev.enter:
+            port_list = []
+            LOG.log(5,'switch connected {}'.format(ev.dp.id))
+            if ev.dp.id not in self.arpTable:
+                # New switch -- create an empty arp table
+                self.arpTable[ev.dp.id] = {}
+            for port in ev.ports:
+                port_list.append({'port':port.port_no})
+                LOG.log(2,"port {}".format(port.port_no))
+            self.switchportTable.append({'switch':ev.dp.id, 'ports':port_list, 'dp':ev.dp})
+            return self.switchportTable
+        else:
+            LOG.log(1,'datapath leave')
+
+    @set_ev_cls(EventOFPPacketIn, MAIN_DISPATCHER)
+    def packet_in_handler(self, ev):
+        tenantConf = ReadConf('conf.xml').readTenantConf()
+        msg = ev.msg
+        data = ev.msg.data
+        dp = msg.datapath
+        ofp = dp.ofproto
+        dpid = dp.id
+        pkt = packet.Packet(array.array('B', msg.data))
+        in_port = ''
+        fields = msg.match.fields
+        for f in fields:
+            if f.header == ofp.OXM_OF_IN_PORT:
+                in_port = f.value
+        vlan_id = 0
+        tenant = Tenant(in_port=in_port, tenants=tenantConf)
+        tVID = tenant.gettVID()
+        if tVID is not None:
+            if tVID not in self.arpTable[dpid]:
+                self.arpTable[dpid][tVID] = {}
+            for p in pkt:
+                t = type(p)
+                if t != array.array:
+                    if p.protocol_name == 'ethernet':
+                        eth_hw_src = p.src
+                        eth_hw_dst = p.dst
+                        ethertype = p.ethertype
+                    if p.protocol_name == 'vlan':
+                        vlan_id = p.vid
+                    if p.protocol_name == 'arp':
+                        self.processARP(dp, dpid, p,in_port, eth_hw_src,eth_hw_dst, ethertype, vlan_id, data, tenant)
+                    if p.protocol_name == 'ipv4':
+                        self.processIPv4(dp, dpid, p,in_port, eth_hw_src,eth_hw_dst, ethertype, pkt, vlan_id, data, tenant)
+
+    def processARP(self, dp, dpid, p, in_port, eth_hw_src, eth_hw_dst, ethertype, vlan_id, data, tenant):
+        self.eth_hw_src = eth_hw_src
+        self.eth_hw_dst = eth_hw_dst
+        self.ethertype = ethertype
+        self.in_port = in_port
+        self.dp = dp
+        tVID = tenant.gettVID()
+
+        if p.proto == arp.PROTO_TYPE_IP:
+            if p.hwtype == arp.ARP_HW_TYPE_ETHERNET:
+                if p.src_ip != 0:
+                    if p.src_ip in self.arpTable[dp.id][tVID]:
+                        if self.arpTable[dp.id][tVID][p.src_ip] != (in_port, eth_hw_src):
+                            LOG.log(4,"arp --- %i %i RE-learned %s", self.dp.id,in_port,socket.inet_ntoa(struct.pack('!I',p.src_ip)))
+                        else:
+                            LOG.log(4,"%i %i learned %s", dp.id,in_port,socket.inet_ntoa(struct.pack('!I',p.src_ip)))
+                    self.arpTable[dp.id][tVID][p.src_ip] = Entry(in_port, p.src_mac)
+                    for ipa in self.arpTable[dp.id][tVID].keys():
+                        LOG.log(2, "arp table: IP: {}, port: {}, MAC: {}, dpid: {}".format(socket.inet_ntoa(struct.pack('!I',ipa)),
+                                                                        self.arpTable[dp.id][tVID][ipa].port,
+                                                                        haddr_to_str(self.arpTable[dp.id][tVID][ipa].mac),
+                                                                        self.arpTable))
+                    virtInt = tenant.getInterfaceByIP(socket.inet_ntoa(struct.pack('!I',p.dst_ip)))
+                    if p.opcode == arp.ARP_REQUEST:
+                        if virtInt != None:
+                            LOG.log(4,"sending arp reply from virtInt {} on switch {} to port {}".format(virtInt, dpid, in_port))
+                            arpReplyPacket = self.createARPreply(virtInt, p, ethertype, vlan_id)
+                            self.send_openflow_packet(dp, arpReplyPacket, in_port)
+                        else:
+                            LOG.log(4,"flooding arp on switch {}".format(dp.id))
+                            for switch in self.arpTable.keys():
+                                if tVID in self.arpTable[switch]:
+                                    for ipa in self.arpTable[switch][tVID].keys():
+                                        if ipa == p.dst_ip:
+                                            LOG.log(4,"dst ip {} is at port {} on switch {}".format(socket.inet_ntoa(struct.pack('!I',p.dst_ip)), self.arpTable[switch][tVID][ipa].port, switch))
+                                            for switch2 in self.switchportTable:
+                                                if switch2['switch'] == switch:
+                                                    self.send_openflow_packet(switch2['dp'], data, self.arpTable[switch][tVID][ipa].port)
+                                                    return
+
+                            port_list = tenant.getPorts(tVID)
+                            for port in port_list:
+                                for switch2 in self.switchportTable:
+                                    if switch2['switch'] == int(port['dpid']):
+                                        LOG.log(4,"sending packet to port {} on switch {}".format(int(port['port']), switch2['switch']))
+                                        self.send_openflow_packet(switch2['dp'], data, int(port['port']))
+                    elif p.opcode == arp.ARP_REPLY:
+                        if virtInt == None:
+                            for switch in self.arpTable.keys():
+                                if tVID in self.arpTable[switch]:
+                                    for ipa in self.arpTable[switch][tVID].keys():
+                                        if ipa == p.dst_ip:
+                                            LOG.log(4,"dst ip {} is at port {} on switch {}".format(socket.inet_ntoa(struct.pack('!I',p.dst_ip)), self.arpTable[switch][tVID][ipa].port, switch))
+                                            for switch2 in self.switchportTable:
+                                                if switch2['switch'] == switch:
+                                                    self.send_openflow_packet(switch2['dp'], data, self.arpTable[switch][tVID][ipa].port)
+                                                    return
+
+    def createARPreply(self, virtInt, p, ethertype, vlan_id):
+        self.virtInt = virtInt
+        self.ethertype = ethertype
+        a = arp.arp(p.hwtype,
+                    p.proto,
+                    p.hlen,
+                    p.plen,
+                    arp.ARP_REPLY,
+                    haddr_to_bin(virtInt['MAC']),
+                    self.ipv4_to_int(virtInt['IP']),
+                    p.src_mac,
+                    self.ipv4_to_int(socket.inet_ntoa(struct.pack('!I',p.src_ip))))
+        e = ethernet.ethernet(p.src_mac, haddr_to_bin(virtInt['MAC']), ethertype)
+        arpReplyPacket = packet.Packet()
+        arpReplyPacket.add_protocol(e)
+        if vlan_id != 0:
+            v = vlan.vlan(0,
+                          0,
+                          vlan_id,
+                          ether.ETH_TYPE_ARP)
+            arpReplyPacket.add_protocol(v)
+        arpReplyPacket.add_protocol(a)
+        arpReplyPacket.serialize()
+        return arpReplyPacket.data
+
+   def createIPv4Packet(self, egressInt, dst_mac ,p, pkt, vlan_id, ethertype):
+        e = ethernet.ethernet(dst_mac, haddr_to_bin(egressInt['MAC']), ethertype)
+        pnext = pkt.next()
+        v4 = ipv4.ipv4(p.version,
+                       p.header_length,
+                       p.tos,
+                       p.total_length,
+                       p.identification,
+                       p.flags,
+                       p.offset,
+                       p.ttl,
+                       p.proto,
+                       p.csum,
+                       p.src,
+                       p.dst)
+
+        ipv4Packet = packet.Packet()
+        ipv4Packet.add_protocol(e)
+        if vlan_id != 0:
+            v = vlan.vlan(0,
+                          0,
+                          vlan_id,
+                          ether.ETH_TYPE_IP)
+            ipv4Packet.add_protocol(v)
+        ipv4Packet.add_protocol(v4)
+        ipv4Packet.add_protocol(pnext)
+        ipv4Packet.serialize()
+        return ipv4Packet.data
+
+    def processIPv4(self, dp, dpid, p, in_port, eth_hw_src, eth_hw_dst, ethertype, pkt, vlan_id, data, tenant):
+        self.eth_hw_src = eth_hw_src
+        self.eth_hw_dst = eth_hw_dst
+        self.ethertype = ethertype
+        self.in_port = in_port
+        src_ip = p.src
+        dst_ip = p.dst
+        tVID = tenant.gettVID()
+        ingressInt = tenant.getInterfaceByMAC(haddr_to_str(eth_hw_dst))
+        egressInt = tenant.getRoutingTable(tVID, socket.inet_ntoa(struct.pack('!I',dst_ip)), socket.inet_ntoa(struct.pack('!I',src_ip)))
+        iplist = tenant.getIPs(tVID)
+        if egressInt != None and egressInt != "l2": #and egressInt['MAC'] == haddr_to_str(eth_hw_dst):
+            LOG.log(2,"l3 traffic")
+            dst_vlan = int(egressInt['sid'])
+            for switch in self.arpTable.keys():
+                if tVID in self.arpTable[switch]:
+                    if dst_ip in self.arpTable[switch][tVID]:
+                        ipv4Packet = self.createIPv4Packet(egressInt, self.arpTable[switch][tVID][dst_ip].mac , p, pkt, dst_vlan, ethertype)
+                        if switch == dpid:
+                            LOG.log(2,"destination port is on same switch")
+                            LOG.log(4,"sending packet to port {} on switch {}".format(self.arpTable[dpid][tVID][dst_ip].port, dpid))
+                            self.send_openflow_packet(dp, ipv4Packet, self.arpTable[dpid][tVID][dst_ip].port)
+                            self.createFlow(dp, in_port, haddr_to_bin(egressInt['MAC']), self.arpTable[dpid][tVID][dst_ip].mac, ethertype, dst_ip, self.arpTable[dpid][tVID][dst_ip].port, dst_vlan)
+                        else:
+                            for switch2 in self.switchportTable:
+                                if switch2['switch'] == switch:
+                                    LOG.log(4,"sending packet to port {} on switch {}".format(self.arpTable[switch][tVID][dst_ip].port, switch2['dp']))
+                                    self.send_openflow_packet(switch2['dp'], ipv4Packet, self.arpTable[switch][tVID][dst_ip].port)
+                                    switchConf = ReadConf('conf.xml').readSwitchConf()
+                                    switch_path = getSwitchPath(str(dp.id), str(switch2['switch']), switchConf)
+                                    swPath = switch_path.switchPath()
+                                    for switch3 in self.switchportTable:
+                                        if switch3['switch'] == int(swPath[len(swPath)-1]['switch']):
+                                            dstSwitchDP = switch3['dp']
+                                    for path_dic in swPath:
+                                        if path_dic['ingressInt'] == 'Src' and path_dic['egressInt'] != 'Dst':
+                                            for switch3 in self.switchportTable:
+                                                if switch3['switch'] == int(path_dic['switch']):
+                                                    outport = int(path_dic['egressInt'])
+                                                    self.createFlow(switch3['dp'], in_port, haddr_to_bin(egressInt['MAC']), self.arpTable[dstSwitchDP.id][tVID][dst_ip].mac, ethertype, dst_ip, outport, dst_vlan)
+                                        elif path_dic['ingressInt'] != 'Src' and path_dic['egressInt'] != 'Dst':
+                                            for switch3 in self.switchportTable:
+                                                if switch3['switch'] == int(path_dic['switch']):
+                                                    self.createFlow(switch3['dp'], in_port, haddr_to_bin(egressInt['MAC']), self.arpTable[dstSwitchDP.id][tVID][dst_ip].mac, ethertype, dst_ip, outport, dst_vlan)
+                                        elif path_dic['ingressInt'] != 'Src' and path_dic['egressInt'] == 'Dst':
+                                            for switch3 in self.switchportTable:
+                                                if switch3['switch'] == int(path_dic['switch']):
+                                                    in_port = int(path_dic['ingressInt'])
+                                                    outport = self.arpTable[switch][tVID][p.dst].port
+                                                    self.createFlow(switch3['dp'], in_port, haddr_to_bin(egressInt['MAC']), self.arpTable[dstSwitchDP.id][tVID][dst_ip].mac, ethertype, dst_ip, outport, dst_vlan)
+                    else:
+                        for switch3 in self.switchportTable:
+                            if switch3['switch'] == switch:
+                                arpRequestPacket = self.createARPRequest(egressInt, tVID, p.dst, dst_vlan)
+                                portlist = tenant.getPorts(tVID)
+                                for port in portlist:
+                                    for switch2 in self.switchportTable:
+                                        if switch2['switch'] == int(port['dpid']):
+                                            LOG.log(4,"sending packet to port {} on switch {}".format(int(port['port']), switch2['switch']))
+                                            self.send_openflow_packet(switch2['dp'], arpRequestPacket, int(port['port']))
+        elif egressInt == "l2":
+            for switch in self.arpTable.keys():
+                if tVID in self.arpTable[switch]:
+                    for ipa in self.arpTable[switch][tVID].keys():
+                        if ipa == p.dst:
+                            for switch2 in self.switchportTable:
+                                if switch2['switch'] == switch:
+                                    self.send_openflow_packet(switch2['dp'], data, self.arpTable[switch][tVID][ipa].port)
+                                    switchConf = ReadConf('conf.xml').readSwitchConf()
+                                    switch_path = getSwitchPath(str(dp.id), str(switch2['switch']), switchConf)
+                                    swPath = switch_path.switchPath()
+                                    for switch3 in self.switchportTable:
+                                        if switch3['switch'] == int(swPath[len(swPath)-1]['switch']):
+                                            dstSwitchDP = switch3['dp']
+                                    for path_dic in swPath:
+                                        if path_dic['ingressInt'] == 'Src' and path_dic['egressInt'] != 'Dst':
+                                            for switch3 in self.switchportTable:
+                                                if switch3['switch'] == int(path_dic['switch']):
+                                                    outport = int(path_dic['egressInt'])
+                                                    self.createFlow(switch3['dp'], in_port, haddr_to_bin('00:00:00:00:00:11'), self.arpTable[dstSwitchDP.id][tVID][p.dst].mac, ethertype, p.dst, outport, vlan_id)
+                                        elif path_dic['ingressInt'] != 'Src' and path_dic['egressInt'] != 'Dst':
+                                            for switch3 in self.switchportTable:
+                                                if switch3['switch'] == int(path_dic['switch']):
+                                                     self.createFlow(switch3['dp'], in_port, haddr_to_bin('00:00:00:00:00:11'), self.arpTable[dstSwitchDP.id][tVID][p.dst].mac, ethertype, p.dst, outport, vlan_id)
+                                        elif path_dic['ingressInt'] != 'Src' and path_dic['egressInt'] == 'Dst':
+                                            for switch3 in self.switchportTable:
+                                                if switch3['switch'] == int(path_dic['switch']):
+                                                    in_port = int(path_dic['ingressInt'])
+                                                    outport = self.arpTable[switch][tVID][p.dst].port
+                                                    self.createFlow(switch3['dp'], in_port, haddr_to_bin('00:00:00:00:00:11'), self.arpTable[dstSwitchDP.id][tVID][p.dst].mac, ethertype, p.dst, outport, vlan_id)
+
+
+
+
+    def createFlow(self, dp, in_port, src_mac, dst_mac, ethertype, dst_ip, out_port, dst_vlan):
+        f_egressmac = dp.ofproto_parser.OFPMatchField.make(ofproto_v1_2.OXM_OF_ETH_SRC, src_mac)
+        f_dstmac = dp.ofproto_parser.OFPMatchField.make(ofproto_v1_2.OXM_OF_ETH_DST, dst_mac)
+        if dst_vlan !=0:
+            f_dstvlan = dp.ofproto_parser.OFPMatchField.make(ofproto_v1_2.OXM_OF_VLAN_VID, dst_vlan)
+            actions=[dp.ofproto_parser.OFPActionSetField(f_egressmac),
+                     dp.ofproto_parser.OFPActionSetField(f_dstmac),
+                     dp.ofproto_parser.OFPActionSetField(f_dstvlan),
+                     dp.ofproto_parser.OFPActionOutput(out_port, 0) ]
+        else:
+            actions=[dp.ofproto_parser.OFPActionSetField(f_egressmac),
+                     dp.ofproto_parser.OFPActionSetField(f_dstmac),
+                     dp.ofproto_parser.OFPActionOutput(out_port, 0) ]
+        inst = [dp.ofproto_parser.OFPInstructionActions(dp.ofproto.OFPIT_APPLY_ACTIONS, actions)]
+
+        match = dp.ofproto_parser.OFPMatch()
+        match.set_in_port(in_port)
+        #match.set_dl_dst(dst_mac)
+        match.set_dl_type(ether.ETH_TYPE_IP)
+        match.set_ipv4_dst(self.ipv4_to_int(socket.inet_ntoa(struct.pack('!I',dst_ip))))
+
+        LOG.log(4,"match: %s", match)
+
+        mod = dp.ofproto_parser.OFPFlowMod(dp, 0, 0, 0,
+                                           dp.ofproto.OFPFC_ADD,
+                                           20, 0, 0xff, 0xffffffff,
+                                           dp.ofproto.OFPP_ANY,
+                                           dp.ofproto.OFPG_ANY,
+                                           0, match, inst)
+        dp.send_msg(mod)
+
+    def createARPRequest(self, egressInt, tVID, dst_ip, dst_vlan):
+        if dst_vlan != 0:
+            e = ethernet.ethernet(haddr_to_bin('ff:ff:ff:ff:ff:ff'), haddr_to_bin(egressInt['MAC']), ether.ETH_TYPE_8021Q)
+        else:
+            e = ethernet.ethernet(haddr_to_bin('ff:ff:ff:ff:ff:ff'), haddr_to_bin(egressInt['MAC']), ether.ETH_TYPE_ARP)
+        a = arp.arp(arp.ARP_HW_TYPE_ETHERNET,
+                    ether.ETH_TYPE_IP,
+                    6,
+                    4,
+                    arp.ARP_REQUEST,
+                    haddr_to_bin(egressInt['MAC']),
+                    self.ipv4_to_int(egressInt['IP']),
+                    haddr_to_bin('00:00:00:00:00:00'),
+                    self.ipv4_to_int(socket.inet_ntoa(struct.pack('!I',dst_ip))))
+
+        arpRequestPacket = packet.Packet()
+        arpRequestPacket.add_protocol(e)
+        if dst_vlan != 0:
+           v = vlan.vlan(0,
+                         0,
+                         dst_vlan,
+                         ether.ETH_TYPE_ARP)
+           arpRequestPacket.add_protocol(v)
+        arpRequestPacket.add_protocol(a)
+        arpRequestPacket.serialize()
+        return arpRequestPacket.data
+
+
+    def send_openflow_packet(self, dp, packet, port_no,
+                             inport=ofproto_v1_2.OFPP_CONTROLLER):
+        actions = [dp.ofproto_parser.OFPActionOutput(port_no, 0)]
+        dp.send_packet_out(in_port=inport, actions=actions, data=packet)
+
+    def ipv4_to_int(self, string):
+        ip = string.split('.')
+        assert len(ip) == 4
+        i = 0
+        for b in ip:
+            b = int(b)
+            i = (i << 8) | b
+        return i
