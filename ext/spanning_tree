@@ -81,8 +81,8 @@
 +        if (self.datapaths.has_key(dp)):
 +            del self.datapaths[dp]
 +        return CONTINUE
-+
-+    def update_spanning_tree(self):
+         ## Spanning Tree Implementataion Important point to note.
++    def update_spanning_tree(self):   
 +        '''Get the links to update the spanning tree
 +        '''
 +        self.bindings.get_all_links(self.update_spanning_tree_callback)
