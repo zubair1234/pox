@@ -1,0 +1,12 @@
+def flip (link):  ## Spanning tree 
+    return Discovery.Link(link[2],link[3], link[0],link[1])   
+
+   
+    ## Discovery 
+   link = Discovery.Link(originatorDPID, originatorPort, event.dpid,
+                          event.port)
+
+
+switches = set()   ## Add switchs
+
+ self.adjacency = {} ## This is equal to self.links = LinkState() in Ryu controller
