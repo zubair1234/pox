@@ -14,3 +14,25 @@ In short, _CONTEXT is the old mechanism, which couples components
 tightly. I hope that we can remove _CONTEXT one day.
 
 Use event feature where possible
+
+
+
+
+Hi,
+
+On Thu, 20 Mar 2014 10:06:11 -0500
+Dong Mo <montedong@...> wrote:
+
+> I have the same question.
+> It could be that when you receive the SwitchFeature event and then install
+> flow in the corresponding switch or monitor the topology and wait for all
+> switches go up and install flows
+> But I am also wondering what should be a reference implementation for
+> something like this
+
+You can use ofp_event.EventOFPStateChange to catch the participation
+of a new switch (and its departure):
+
+http://osrg.github.io/ryu-book/en/html/traffic_monitor.html
+
+Of course, you can find example code to install flows in Ryu book too.
