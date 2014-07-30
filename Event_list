@@ -1,0 +1,3 @@
+ofp_event.EventOFPStateChange  used for switch add and delete required data path
+Port Add , modify , delete is through ofp_event.EventOFPPortStatus
+dpset for true and false
