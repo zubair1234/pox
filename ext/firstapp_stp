@@ -1,0 +1,388 @@
+# Comments Day 1 = Buffer ID is necessary , Flooding is not taking place , Need to take care of ARP and MAC address and ICMP tomorrow and need to implement 
+# some configuration methods 
+# today handla packet eth and so
+# OVSDB and OF-Config that is a dtabase protocol.
+# Netconfig and tests on similar files.
+# third party database libraries
+# quantum adapter
+# Netflow 
+# parsing meanings
+#EVENTOFP.PORT /SWITCH ETC look for
+
+
+import logging
+import json
+
+from ryu.topology.switches import Switches
+from ryu.topology import api
+#from ryu.topology import event 
+from ryu.base import app_manager
+from ryu.controller import ofp_event 
+from ryu.controller.handler import MAIN_DISPATCHER , CONFIG_DISPATCHER , DEAD_DISPATCHER
+from ryu.controller.handler import set_ev_cls
+from ryu.ofproto import ofproto_v1_3
+from ryu.controller.controller import Datapath
+from ryu.lib.packet import packet, ethernet, arp
+from ryu.ofproto import ether
+from ryu.lib import ofctl_v1_3
+from ryu.app.ofctl import service
+from ryu.lib import mac as mac_lib
+from ryu.lib import addrconv
+from ryu.topology import event
+from ryu.lib.port_no import port_no_to_str
+from ryu.controller import handler
+from ryu.controller import dpset
+from ryu.lib import stplib
+from ryu.lib.dpid import dpid_to_str
+ARP = arp.arp.__name__
+LOG = logging.getLogger(__name__)
+
+class configuration(app_manager.RyuApp):
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+    #_CONTEXTS = { 'dpset' : dpset.DPSet, }
+    _CONTEXTS = {'stplib' : stplib.Stp}
+    
+    
+    def __init__(self, *args, **kwargs):
+        super(configuration, self).__init__(*args, **kwargs)
+        self.mac_table={}
+        self.mac_to_port= {}
+        self.stp= kwargs['stplib']
+
+        #config = {dpid_lib.str_to_dpid('0000000000000001'):
+        #                  {'bridge': {'priority': 0x8000}},
+        #dpid_lib.str_to_dpid('0000000000000002'):
+        #               {'bridge': {'priority': 0x9000}},
+        #dpid_lib.str_to_dpid('0000000000000003'):
+        #       {'bridge': {'priority': 0xa000}}}
+        #self.stp.set_config(config)
+        #self.dpset = kwargs ['dpset']
+        #self.port_state = {}
+        #self.dps={}
+        
+     
+    #def _get_hwaddr(self, dpid, port_no):
+       # return self.dpset.get_port(dpid, port_no).hw_addr
+        #return self.get_port(dpid_port_no).hw_addr
+    
+    #@handler.set_ev_cls(event.EventLinkAdd)
+    #def link_add(self, ev):
+     #   print ev.link.src, ev.link.dst
+      #  print self._get_hwaddr(ev.link.src.dpid, ev.link.src.port_no)
+
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def features_handler(self, ev):
+         
+        msg=ev.msg
+        datapath = msg.datapath
+        print ( 'Features_Handler ' )
+        ofproto = datapath.ofproto 
+        of_parser = datapath.ofproto_parser
+        priority_arp = 1
+        priority_icmp = 3
+        priority_mac = 4
+        cookie = 1 
+        dpid = datapath.id 
+    
+        if dpid == 2:
+           
+           match = of_parser.OFPMatch( in_port =1 , arp_op = 1, eth_type = 0x0806, eth_dst='ff:ff:ff:ff:ff:ff', arp_tpa = '10.0.0.2')
+           out_port = 2          
+           actions = []
+           actions.append (of_parser.OFPActionSetField(eth_src='00:00:00:00:00:01'))
+           actions.append (of_parser.OFPActionOutput(out_port)) 
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_mac, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+
+           match = of_parser.OFPMatch ( in_port = 1, eth_type = 0x0800 ,ip_proto=1,icmpv4_type = 8, ipv4_src='10.0.0.1', ipv4_dst='10.0.0.2')
+           out_port = 2
+           actions = []
+           actions.append (of_parser.OFPActionOutput(out_port))
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_mac, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+
+          ######################################################################## 
+           match = of_parser.OFPMatch ( eth_type = 0x0806 ,arp_op = 2, eth_dst='00:00:00:00:00:01' )
+           out_port = 1
+           actions=[]
+           actions.append (of_parser.OFPActionOutput(out_port))
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_mac, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+           match = of_parser.OFPMatch ( eth_type = 0x0800 ,ip_proto=1,icmpv4_type = 0 , ipv4_dst='10.0.0.1')
+           out_port = 1
+           actions=[]
+           actions.append (of_parser.OFPActionOutput(out_port))
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_mac, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+           match = of_parser.OFPMatch( in_port =1 , arp_op = 1, eth_type = 0x0806, eth_dst='ff:ff:ff:ff:ff:ff')
+           
+           out_port = 3
+           actions=[]
+           actions.append (of_parser.OFPActionOutput(out_port))
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=3, match=match,instructions=inst)
+           datapath.send_msg(out)
+           
+          
+
+           #######################################################################
+
+           match = of_parser.OFPMatch ( in_port = 1, eth_type = 0x0800 ,ip_proto=1,icmpv4_type = 8, ipv4_src='10.0.0.1')
+           out_port = 3
+           actions = []
+           actions.append (of_parser.OFPActionOutput(out_port))
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=2, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+           match = of_parser.OFPMatch ( in_port = 3, eth_type = 0x0800 ,ip_proto=1,icmpv4_type = 0 ,ipv4_dst='10.0.0.1') #icmp=0 reply
+           out_port = 1
+           actions = []
+           actions.append (of_parser.OFPActionOutput(out_port))
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=2, match=match,instructions=inst)
+           datapath.send_msg(out)           
+
+ 
+           #########################################################################
+
+        if dpid == 1:
+           match = of_parser.OFPMatch( in_port =1 , arp_op = 1, eth_type = 0x0806, eth_dst='ff:ff:ff:ff:ff:ff')
+           out_port = 2
+           actions = [of_parser.OFPActionOutput(out_port)]
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_arp, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+           match = of_parser.OFPMatch( in_port =1 , eth_type = 0x0800,ip_proto=1,icmpv4_type = 8)
+           out_port = 2
+           actions = [of_parser.OFPActionOutput(out_port )]
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_arp, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+
+           match = of_parser.OFPMatch( in_port =2 )
+           out_port = 1
+           actions = [of_parser.OFPActionOutput(out_port )]
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_arp, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+        if dpid == 3:
+           match = of_parser.OFPMatch( in_port = 3 ,  arp_op = 1, eth_type = 0x0806, eth_dst='ff:ff:ff:ff:ff:ff', arp_tpa='10.0.0.3')
+           actions = [of_parser.OFPActionOutput(1) ]
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_arp, match=match,instructions=inst)
+           datapath.send_msg(out)
+           
+           match = of_parser.OFPMatch( in_port = 3 ,  arp_op = 1, eth_type = 0x0806, eth_dst='ff:ff:ff:ff:ff:ff', arp_tpa='10.0.0.4')
+           actions = [of_parser.OFPActionOutput(2) ]
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_arp, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+           match = of_parser.OFPMatch( arp_op = 2, eth_type = 0x0806 )
+           actions = [of_parser.OFPActionOutput(3) ]
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=1, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+           match = of_parser.OFPMatch( in_port =3 , eth_type = 0x0800,ip_proto=1,icmpv4_type = 8)
+           actions = [of_parser.OFPActionOutput(1) ]
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_arp, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+           match = of_parser.OFPMatch( eth_type = 0x0800,ip_proto=1,icmpv4_type = 0)
+           actions = [of_parser.OFPActionOutput(3) ]
+           inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions)]
+           out = of_parser.OFPFlowMod(datapath=datapath, priority=priority_arp, match=match,instructions=inst)
+           datapath.send_msg(out)
+
+           
+
+
+    #def mac_flow(self, datapath, priority, match, actions):
+        
+       # ofproto = datapath.ofproto
+       # of_parser = datapath.ofproto_parser
+       # out_port = ofproto.OFPP_CONTROLLER
+       # length = ofproto.OFPCML_NO_BUFFER
+       # match = of_parser.OFPMatch()
+       # actions = [of_parser.OFPActionOutput(out_port , length)]
+
+        
+       # inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,actions=actions)]
+        
+       # out =of_parser.OFPFlowMod(datapath=datapath, priority=priority, match=match, instructions=inst)
+
+       # datapath.send_msg(out)
+ 
+    @set_ev_cls(ofp_event.EventOFPPacketIn,[ MAIN_DISPATCHER, DEAD_DISPATCHER])
+    def packet_in_handler(self, ev):
+       
+       #sw_list  = get_switch(self, 1)
+       #sw_list = api.get_all_switch(self)
+       # sw_list_body =json.dumps([ switch.to_dict() for switch in sw_list]) 
+       #print('sw_list_body {}'.format(sw_list_body))
+       
+       #link_list = api.get_all_link(self)
+       #link_list_body = json.dumps([ link.to_dict() for link in link_list ])
+       #print('link_list_body {}'.format(link_list_body))
+
+       #link_self = api.get_link(self,1)  ## dpid
+       #link_body = json.dumps([ link.to_dict() for link in link_self ])
+       #print('link_body {}'.format(link_body))
+
+       #link_self = api.get_link(self,2)  ## dpid
+       #link_body = json.dumps([ link.to_dict() for link in link_self ])
+       #print('link_body {}'.format(link_body))
+       
+       #link_self = api.get_link(self,3)  ## dpid
+       #link_body = json.dumps([ link.to_dict() for link in link_self ])
+       #print('link_body {}'.format(link_body))
+
+
+       msg = ev.msg                     # object which describes the openflow messages must 
+       datapath = msg.datapath          # instance that describes and openflowswitch datapath must 
+       #print ('Coming from')            # how can i know about the datapath?
+       ofproto = datapath.ofproto       # of proto is an instance of the function inhereted by datapath it basically export openflow modules
+       parser = datapath.ofproto_parser # encoding and decoding of openflow messages version ?
+       in_port = msg.match['in_port']
+       out_port = ofproto.OFPP_FLOOD
+                                        # always used for Openflow protocols  
+       data=msg.data                                 #buffer_id=msg.buffer_id
+       actions = [parser.OFPActionOutput(out_port,0)] # prepare openflow messages ofproto_parser OFPxxx (xxx is message) 
+       
+       out = parser.OFPPacketOut(datapath=datapath,buffer_id = ofproto.OFP_NO_BUFFER, in_port=in_port, actions=actions, data=data)
+       datapath.send_msg(out)
+
+       Stp.packet_in_handler
+
+
+    @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
+    def port_status_handler(self,ev):
+       msg=ev.msg
+       reason=msg.reason
+       dp=msg.datapath
+       ofpport = msg.desc
+
+       Switches.port_status_handler
+       print('yes')
+
+       #sw_list  = get_switch(self, 1)
+       sw_list = api.get_all_switch(self)
+       sw_list_body =json.dumps([ switch.to_dict() for switch in sw_list])
+       print('sw_list_body {}'.format(sw_list_body))
+
+       link_list = api.get_all_link(self)
+       link_list_body = json.dumps([ link.to_dict() for link in link_list ])
+       print('link_list_body {}'.format(link_list_body))
+
+       #link_self = api.get_all_link(self)  ## dpid
+       #link_body = json.dumps([ link.to_dict() for link in link_self ])
+       #print('link_body {}'.format(link_body))
+
+       #link_self = api.get_link(self,2)  ## dpid
+       #link_body = json.dumps([ link.to_dict() for link in link_self ])
+       #print('link_body {}'.format(link_body))
+
+    @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER,DEAD_DISPATCHER])
+    def state_change_handler(self, ev):
+      
+       dp=ev.datapath
+       assert dp is not None
+       LOG.debug(dp)
+       
+       sw_list = api.get_all_switch(self)
+       sw_list_body =json.dumps([ switch.to_dict() for switch in sw_list])
+       print('sw_list_body {}'.format(sw_list_body))
+       
+       link_list = api.get_all_link(self)
+       link_list_body =json.dumps([link.to_dict() for link in link_list])
+       print ('link_list_body {}' .format(link_list_body))
+       Switches.state_change_handler
+   
+    @handler.set_ev_cls(event.EventPortModify)
+    def port_modify_handler(self, ev):
+       LOG.debug(ev)
+
+    #@handler.set_ev_cls(event.EventLinkAdd)
+    #def link_add(self, ev):
+      #  dp=ev.dpset
+       # print ev.link.src, ev.link.dst
+       # print self._get_hwaddr(ev.link.src.dp, ev.link.src.port_no)
+        
+       #if reason == dp.ofproto.OFPPR_MODIFY:
+          #self.port_state[dp.id].modify(ofpport.port_no, ofpport)
+          #self.send_event_to_observers(
+          #event.EventPortModify(Port(dp.id, dp.ofproto, ofpport)))    
+
+ 
+
+#       src='08:60:6e:7f:74:e7'
+#       dst='ff:ff:ff:ff:ff:ff'
+#       dst_mac='00:00:00:00:00:00'
+#       opcode='2'
+#       src_ip='10.0.0.1'
+#       dst_ip='10.0.0.2'
+      
+#       e = ethernet.ethernet(dst,src, ethertype=ether.ETH_TYPE_ARP)
+#       a = arp.arp(hwtype=1, proto=0x0800, hlen=6, plen=4, opcode=2,
+#       src_mac='08:60:6e:7f:74:e7', src_ip='192.0.2.1',
+#       dst_mac='00:00:00:00:00:00', dst_ip='192.0.2.2')
+#       p = packet.Packet()
+#       p.add_protocol(e)
+#       p.add_protocol(a)
+#       p.serialize()
+#       print repr(p.data)
+    
+
+#    def send_set_async(self, datapath):
+#       ofproto_parser=datapath.ofproto_parser
+ #      ofproto=datapath.ofproto
+
+#       packet_in_mask = ofproto.OFPR_ACTION | ofproto.OFPR_TTL
+#       port_status_mask = (ofproto.OFPPR_ADD | ofproto.OFPPR_DELETE |
+#                        ofproto.OFPPR_MODIFY)
+#       flow_removed_mask = (ofproto.OFPRR_IDLE_TIMEOUT |
+#                        ofproto.OFPRR_HARD_TIMEOUT |
+#                         ofproto.OFPRR_DELETE)
+#       req = ofproto_parser.OFPSetAsync(datapath,
+#                                 [packet_in_mask, 0],
+#                                 [port_status_mask, 0],
+#                                 [flow_removed_mask, 0])
+#      datapath.send_msg(req)
+
+#   def send_get_async_request(self, datapath):
+#       ofproto_parser = datapath.ofproto_parser
+
+#      req = ofproto_parser.OFPGetAsyncRequest(datapath)
+#       datapath.send_msg(req)
+
+#    @set_ev_cls(ofp_event.EventOFPGetAsyncReply, MAIN_DISPATCHER)
+#    def get_async_reply_handler(self, ev):
+#       msg = ev.msg
+
+#        self.logger.debug('OFPGetAsyncReply received: '
+#                     'packet_in_mask=0x%08x:0x%08x '
+#                      'port_status_mask=0x%08x:0x%08x '
+#                      'flow_removed_mask=0x%08x:0x%08x',
+#                      msg.packet_in_mask[0],
+#                      msg.packet_in_mask[1],
+#                      msg.port_status_mask[0],
+#                      msg.port_status_mask[1],
+#                      msg.flow_removed_mask[0],
+#                      msg.flow_removed_mask[1])
+
+   
+    
