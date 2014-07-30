@@ -1,2 +1,16 @@
 import get_link() from ryu.topology.switches and
 > call it whenever you want to get a topo in your RyuApp.
+> Event(request if sync is required) is used to pass information across
+> different applications, like if I start switches.py and my own app together
+> and I can send request to switches.py through get_switch() to get switch
+> info.
+> 
+> Then what does _CONTEXT do? For example in the link exaggeration example,
+> the simple switch is in the context of lacplib. Then what is the relation
+> between "lib" and "app" in RYU? What does the fact that
+> simple_switch_lacp_13.py is in the CONTEXT of lacplib mean?
+
+In short, _CONTEXT is the old mechanism, which couples components
+tightly. I hope that we can remove _CONTEXT one day.
+
+Use event feature where possible
