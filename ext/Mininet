@@ -1,0 +1,13 @@
+Run custom topology in mininet:
+
+sudo mn --custom spanning_tree.py --topo mytopo --mac --controller=remote
+
+Run python script 
+
+sudo python xyz.py
+
+If it get stuck
+
+service openvswitch-switch start
+
+
