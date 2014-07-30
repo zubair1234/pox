@@ -1,0 +1,2 @@
+import get_link() from ryu.topology.switches and
+> call it whenever you want to get a topo in your RyuApp.
