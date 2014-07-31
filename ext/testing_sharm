@@ -12,7 +12,7 @@ from ryu.lib.mac import haddr_to_bin
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.dpid import dpid_to_str, str_to_dpid
-from bulbs.titan import Graph
+from bulbs.titan import Graph,Config
 import ryu.topology.api
 import time
 
@@ -48,6 +48,7 @@ class SimpleSwitch(app_manager.RyuApp):
         self.switch_vertices = []
         self.port_vertices = []
         self.device_vertices = []
+        config = Config('http://192.168.241.192:8182/graphs/graph')
         self.g = Graph()
 
     def add_flow(self, datapath, in_port, dst, actions):
