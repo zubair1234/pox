@@ -1,0 +1,13 @@
+# Clone: git clone https://github.com/thinkaurelius/titan
+# Remove: rm -rf dir
+# Mail from ubuntu : echo "d" | mutt -a "/home/mininet/ryu/ryu/app/firstapp.py" -s "subject of message" -- zubairhafeez@live.com
+sudo ovs-vsctl set Bridge s1 protocols=OpenFlow13
+sudo mn --topo tree,2 --mac  --switch ovsk --controller remote
+ovs-ofctl -O OpenFlow13 dump-flows s1
+sudo ovs-vsctl show
+ps -ef | grep
+ovs-dpctl show  (Ports)
+
+database:
+ovsdb-client list-tables
+ovs-vsctl list Bridge ( bridge is table name)
