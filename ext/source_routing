@@ -1,0 +1,152 @@
+from ryu.controller import handler
+from ryu.controller import ofp_event
+from ryu.ofproto import ofproto_v1_3
+from ryu.ofproto import ofproto_v1_3_parser as parser
+from ryu.base import app_manager
+from ryu.ofproto.ofproto_parser import MsgBase, msg_pack_into, msg_str_attr
+from ryu.topology import api
+from ryu.topology import event
+from ryu.topology import switches
+from pygraph.classes.graph import graph
+from pygraph.classes.digraph import digraph
+from pygraph.algorithms.minmax import shortest_path
+from ryu.lib.packet import arp
+from ryu.lib.packet import ethernet
+from ryu.lib.packet import packet
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
+
+
+#TODO: handle dynamics and failures of switches and hosts
+#TODO: automatically discover lldp speaking vms
+#TODO: new event system filter out lldp packets
+#TODO: modulize "apply_source_routing" component to make it reusable
+
+class OF13(app_manager.RyuApp):
+
+
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+
+    def __init__(self, *args, **kwargs):
+        super(OF13, self).__init__(*args, **kwargs)
+        self.gr = graph()
+        self.link_dic = {}
+        self.switch_dic = {}
+        self.hop_mask = ['00:00:00:00:00:ff',
+                         '00:00:00:00:ff:00',
+                         '00:00:00:ff:00:00',
+                         '00:00:ff:00:00:00',
+                         '00:ff:00:00:00:00',
+                         'ff:00:00:00:00:00'] 
+        self.switch_to_vm_map = {1:[{"ip":"10.0.0.1", "dpid":1, "mac":"00:00:00:00:00:01", "port":1}], 5:[{"ip":"10.0.0.5", "dpid":2, "mac":"00:00:00:00:00:05", "port":1}]}
+        self.vm_to_switch_map = {"10.0.0.1":1, "10.0.0.5":5}
+
+    
+    def _not_ovs(self, dpid):
+        return True
+
+    def _set_up_flowtable(self, switch):
+        #TODO: flush the old state in case the new guy is joining
+	host_list = []
+        for vid in range(1,7):
+          for port in switch.ports:
+            match = parser.OFPMatch(vlan_vid = vid|ofproto_v1_3.OFPVID_PRESENT,
+               eth_dst=(port.port_no<<((vid-1)*8), self.hop_mask[vid-1]), eth_type=0x0800)
+            actions = [parser.OFPActionSetField(vlan_vid = vid+1), parser.OFPActionOutput(port.port_no)]
+            inst = [parser.OFPInstructionActions(ofproto_v1_3.OFPIT_APPLY_ACTIONS, actions)]
+            req = parser.OFPFlowMod(datapath = switch.dp, match = match, instructions = inst)
+            switch.dp.send_msg(req)         
+          if self.switch_to_vm_map.has_key(switch.dp.id):
+            for vm in self.switch_to_vm_map[switch.dp.id]:
+              match = parser.OFPMatch(vlan_vid = vid|ofproto_v1_3.OFPVID_PRESENT, ipv4_dst = vm["ip"], eth_type=(0x0800), eth_dst=(0xff<<((vid-1)*8),  self.hop_mask[vid-1]))
+              actions = [parser.OFPActionPopVlan(), parser.OFPActionSetField(eth_dst = vm["mac"]), parser.OFPActionOutput(vm["port"])]
+              inst = [parser.OFPInstructionActions(ofproto_v1_3.OFPIT_APPLY_ACTIONS, actions)]
+              req = parser.OFPFlowMod(datapath = switch.dp, match = match, instructions = inst)
+              switch.dp.send_msg(req)
+
+    @handler.set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in_handler(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        port = msg.match['in_port']
+
+        pkt = packet.Packet(msg.data)
+        eth_header = pkt.get_protocol(ethernet.ethernet)
+        if not eth_header:
+          return
+        arp_header = pkt.get_protocol(arp.arp)
+        if not arp_header:
+          return
+        if arp_header.opcode != arp.ARP_REQUEST:
+          return
+        src_ip = arp_header.src_ip
+        dst_ip = arp_header.dst_ip
+        src_switch = self.vm_to_switch_map[src_ip]
+        dst_switch = self.vm_to_switch_map[dst_ip]
+        src_mac = arp_header.src_mac
+        for host in self.switch_to_vm_map[dst_switch]:
+          if host["ip"] == dst_ip:
+            dst_mac = host["mac"]   
+      
+        if src_switch == dst_switch:
+          print "deal later"
+          return
+
+        u,v = shortest_path(self.gr, src_switch)
+        path=[]
+        for i in range(v[dst_switch]):
+          path.append((u[dst_switch], dst_switch))
+          dst_switch = u[dst_switch]
+        mac = 0xff
+        for link in path[0:len(path)-1]:
+          mac = mac<<8
+          mac = mac|self.link_dic[link]
+
+        first_hop_port = self.link_dic[path[-1]]
+        first_hop_switch = self.switch_dic[path[-1][0]]
+
+        match = parser.OFPMatch( eth_dst=dst_mac, eth_src=src_mac, eth_type=0x0800, ipv4_src=src_ip, ipv4_dst=dst_ip)
+        actions = [parser.OFPActionPushVlan(0x8100), parser.OFPActionSetField(vlan_vid = 0x0001), parser.OFPActionSetField(eth_dst = mac), parser.OFPActionOutput(first_hop_port)]
+        inst = [parser.OFPInstructionActions(ofproto_v1_3.OFPIT_APPLY_ACTIONS, actions)]
+        req = parser.OFPFlowMod(datapath = first_hop_switch.dp, match = match, instructions = inst) 
+        first_hop_switch.dp.send_msg(req)     
+
+        pkt_reply = packet.Packet()
+        pkt_reply.add_protocol(ethernet.ethernet(ethertype=eth_header.ethertype,
+                                           dst=eth_header.src,
+                                           src=dst_mac)) 
+        pkt_reply.add_protocol(arp.arp(opcode=arp.ARP_REPLY, src_mac=dst_mac, src_ip=dst_ip, dst_mac=src_mac, dst_ip=src_ip))
+        self._send_packet(datapath, port, pkt_reply)
+ 
+    def _send_packet(self, datapath, port, pkt):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        pkt.serialize()
+        data = pkt.data
+        actions = [parser.OFPActionOutput(port=port)]
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=ofproto.OFPP_CONTROLLER, actions=actions, data=data)
+        datapath.send_msg(out)
+
+#first deal with arp packet, compute shortest path
+#second at the same time, push rule to edge switches, for the src edge, push a src dst match and action is push vlan_tag and change dst MAC and output to corresponding port(got from the path computation), for the las hop, use speical number 0xff to indicate that this is the last hop
+
+
+    @handler.set_ev_cls(event.EventSwitchEnter)
+    def switch_enter_handler(self, ev):
+        self.gr.add_node(ev.switch.dp.id)
+        self.switch_dic[ev.switch.dp.id] = ev.switch
+        if self._not_ovs(ev.switch.dp.id):
+          self._set_up_flowtable(ev.switch)
+        return
+    #TODO: respond to switch leave and link delete, port add port delete also
+
+    @handler.set_ev_cls(event.EventLinkAdd)
+    def link_add(self, ev):
+        #print ev.link.src, ev.link.dst
+        if not self.gr.has_edge((ev.link.src.dpid, ev.link.dst.dpid)):
+          self.gr.add_edge((ev.link.src.dpid, ev.link.dst.dpid))
+        self.link_dic[(ev.link.src.dpid, ev.link.dst.dpid)] = ev.link.src.port_no
+    
+ 
+        #print self._get_hwaddr(ev.link.src.dpid, ev.link.src.port_no)
