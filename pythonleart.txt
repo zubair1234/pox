@@ -1,0 +1,110 @@
+
+
+List = []
+List.append("switch")
+Adds switch to List
+
+
+-------------------------------
+Tuples that canno be modified
+
+tuple = ()
+
+Cannot be modified.
+
+------------------------------
+
+Dictionary have series of key values pair
+Address book Name of people and details
+Key Name values is details address
+
+Dictionary created through {}  , CAN STORE TUPLES AND LISTS
+
+
+inventory = {} nothing on it add on later 
+
+how to add inventory ['key'] = value     [key.1] = key in dictionary
+
+They are accessed through key name only
+inventory['']
+
+Key value should be unique
+
+
+Methods use to dictionay:
+
+
+
+---------------------------------
+
+For loop
+
+for i in list  ## here i is variable for loop  list atc apply to dict and so s
+
+print(i)
+
+
+----------------------------------
+Format print ("" format )
+
+----------------------------------
+
+Class student
+
+Sepecial objects : start from __1__ 
+Object: refer to class and can access its functions.
+
+def __init__ ( self, name ) : # Self is a required first parameter , it passes the object it self name should be passed values 
+ self.name = name
+ self.attend = 0
+ 
+ 
+ I can creat object of the class and access it but for that i need to pass parameter also 
+ 
+ s1 = student("Patrick")
+ 
+ s1.name
+ s1.attend
+ 
+ Second is functions
+ 
+ def attendday(self) 
+ 
+ self.attend =1            ££ here self.attend is described below the class
+ 
+ Now 
+ s1 = student('Patrick')
+ s1.attendday()
+ s1.attend
+ 
+ 
+ Example 
+ 
+ Class student :
+ 
+ def __init__ (self, name)  
+ self.name = name
+ self.grades= []
+ self. attendance = 1
+ 
+ def addgrade(self,grade)
+ self.grades.append(grade)
+ 
+ 
+ """"" Number 2 method '''''
+def population()
+print xyz
+
+we can access only through the class not through object student.population()
+
+
+Input/output : 
+
+ 
+ 
+ 
+
+
+
+
+
