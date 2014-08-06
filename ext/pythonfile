@@ -1,0 +1,5 @@
+python file
+
+sudo apt-get install python-setuptools
+sudo easy_install python-grap
+sudo apt-get install libgv-python 
