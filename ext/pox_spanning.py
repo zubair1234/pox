@@ -1,4 +1,4 @@
-from pox.core import core
+from pox.core import core    # import core function
 import pox.openflow.libopenflow_01 as of
 from pox.lib.revent import *
 from collections import defaultdict
@@ -12,23 +12,24 @@ log = core.getLogger()
 # Might be nice if we made this accessible on core...
 #_adj = defaultdict(lambda:defaultdict(lambda:[]))
 
-def _calc_spanning_tree ():
+def _calc_spanning_tree ():   ## static method pass through class objects
   """
   Calculates the actual spanning tree
 
   Returns it as dictionary where the keys are DPID1, and the
-  values are tuples of (DPID2, port-num), where port-num
+  values are tuples of (DPID2, port-num), where port-num   ## DPID= KEY (DPID,PORT_NUMBER) = VALUES in port of (dpid,port-numn)
+  
   is the port on DPID1 connecting to DPID2.
   """
-  def flip (link):
-    return Discovery.Link(link[2],link[3], link[0],link[1])
-
-  adj = defaultdict(lambda:defaultdict(lambda:[]))
-  switches = set()
+  def flip (link):        # link parameters , variables 
+    return Discovery.Link(link[2],link[3], link[0],link[1])  # values of parameter link pass to discovery.link list index =2 first
+                                                             # here discovery is the class and link is class Lnk is tuple
+  adj = defaultdict(lambda:defaultdict(lambda:[]))   # lambda = list we can modify list
+  switches = set()         ## () tuples list cannot change through out the program set values 
   # Add all links and switches
-  for l in core.openflow_discovery.adjacency:
-    adj[l.dpid1][l.dpid2].append(l)
-    switches.add(l.dpid1)
+  for l in core.openflow_discovery.adjacency:      # 
+    adj[l.dpid1][l.dpid2].append(l)  # add at the end of append
+    switches.add(l.dpid1)  # add value in switches  
     switches.add(l.dpid2)
 
   # Cull links -- we want a single symmetric link connecting nodes
@@ -60,10 +61,10 @@ def _calc_spanning_tree ():
 
   tree = defaultdict(set)
 
-  while True:
+  while True:   ## infine loop keep running this forever
     q = sorted(list(more)) + q
     more.clear()
-    if len(q) == 0: break
+    if len(q) == 0: break   ## come out of while loop if len(q)==0
     v = q.pop(False)
     if v in done: continue
     done.add(v)
@@ -164,7 +165,7 @@ def _update_tree (force_dpid = None):
           # Too young -- we should hold down changes.
           if force_dpid is not None and sw == force_dpid:
             # .. but we'll allow it anyway
-            pass
+            pass   # dont do anythin just move out
           else:
             continue
 
