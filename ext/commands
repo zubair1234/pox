@@ -15,3 +15,16 @@ ovs-vsctl list Bridge ( bridge is table name)
 
 ## Programming assignment:https://github.com/littlepretty/Coursera-SDN-Assignments/blob/master/ProgrammingAssignments/Programming-Assignment-4/virtualization-assignment/topologySlice.py
 ## https://github.com/Remixman/Open_MPI_SDN_controller
+
+
+########################################3
+
+Up grade OpenvSwitch
+
+https://github.com/mininet/mininet/wiki/Installing-new-version-of-Open-vSwitch
+
+root@mininet-vm# /etc/init.d/openvswitch-controller stop
+root@mininet-vm# update-rc.d openvswitch-controller disable
+Start OVS server process:
+
+root@mininet-vm# /etc/init.d/openvswitch-switch start
