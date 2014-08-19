@@ -12,6 +12,12 @@ database:
 ovsdb-client list-tables
 ovs-vsctl list Bridge ( bridge is table name)
 
+Port status of the switches:
+
+sudo ovs-ofctl show s1
+
+
+
 
 ## Programming assignment:https://github.com/littlepretty/Coursera-SDN-Assignments/blob/master/ProgrammingAssignments/Programming-Assignment-4/virtualization-assignment/topologySlice.py
 ## https://github.com/Remixman/Open_MPI_SDN_controller
