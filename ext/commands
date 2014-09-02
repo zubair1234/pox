@@ -17,6 +17,7 @@ Port status of the switches:
 sudo ovs-ofctl show s1
 
 
+ kill -9 11800
 
 
 ## Programming assignment:https://github.com/littlepretty/Coursera-SDN-Assignments/blob/master/ProgrammingAssignments/Programming-Assignment-4/virtualization-assignment/topologySlice.py
