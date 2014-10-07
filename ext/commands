@@ -35,3 +35,11 @@ root@mininet-vm# update-rc.d openvswitch-controller disable
 Start OVS server process:
 
 root@mininet-vm# /etc/init.d/openvswitch-switch start
+
+error fix
+ps -ef | grep ovs 
+kill -9
+sudo apt-get install mininet
+sudo service openvswitch-controller stop
+sudo update-rc.d openvswitch-controller disable
+sudo mn --test pingall
