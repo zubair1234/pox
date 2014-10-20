@@ -43,3 +43,15 @@ sudo apt-get install mininet
 sudo service openvswitch-controller stop
 sudo update-rc.d openvswitch-controller disable
 sudo mn --test pingall
+
+
+
+
+--------------------------------------------------
+
+ svn mkdir 
+ svn add new_folder
+ svn commit -m "Add New folder to the project"
+ 
+ --------------------------------------------------
+ 
